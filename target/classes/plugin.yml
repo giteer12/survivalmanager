@@ -1,0 +1,8 @@
+name: SurvivalManager
+main: com.example.survival.SurvivalPlugin
+version: 1.0.0
+description: Xinbot survival management plugin based on MovementSync
+author: Example
+type: PLUGIN
+depend:
+  - MovementSync

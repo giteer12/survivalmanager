@@ -1,0 +1,5 @@
+survival-management:
+  description: "SurvivalManager 生存管理插件"
+  usage: "survival-management <help|status|killaura|enderman|autoeat|friend|inventory|antiafk|chest>"
+  aliases: ["survival-management", "sm"]
+  executor: "com.example.survival.commands.SurvivalManagementCommandExecutor"

@@ -1,0 +1,180 @@
+# SurvivalManager 主配置文件
+
+# ====== KillAura 杀戮光环 ======
+killAura:
+  enabled: false
+  radius: 5.0
+  cooldown: 1.0
+  maxTargets: 2
+  attackPlayers: false
+  weapons:
+    - SWORD
+    - AXE
+    - PICKAXE
+    - HAND
+  monsters:
+    - ZOMBIE
+    - SKELETON
+    - CREEPER
+    - SPIDER
+    - CAVE_SPIDER
+    - WITCH
+    - SLIME
+    - MAGMA_CUBE
+    - BLAZE
+    - GHAST
+    - PIGLIN
+    - PIGLIN_BRUTE
+    - HOGLIN
+    - ZOGLIN
+    - DROWNED
+    - HUSK
+    - STRAY
+    - WITHER_SKELETON
+    - ENDERMITE
+    - SILVERFISH
+    - VEX
+    - EVOKER
+    - VINDICATOR
+    - PILLAGER
+    - RAVAGER
+    - ILLUSIONER
+    - WARDEN
+    - ENDER_DRAGON
+    - WITHER
+
+# ====== EndermanManager 末影人管理 ======
+endermanManager:
+  enabled: false
+  avoidLookAt: true
+  killIfAttacked: true
+  attackRange: 5  # 追击范围（格），目标超出此距离则取消追击
+
+# ====== AutoEat 自动进食 ======
+autoEat:
+  enabled: false
+  healthThreshold: 18
+  saturationThreshold: 18
+  respectAbsorption: true
+  priority:
+    - ENCHANTED_GOLDEN_APPLE
+    - GOLDEN_APPLE
+    - GOLDEN_CARROT
+    - STEAK
+    - COOKED_BEEF
+    - COOKED_PORKCHOP
+    - COOKED_CHICKEN
+    - COOKED_MUTTON
+    - COOKED_COD
+    - COOKED_SALMON
+    - COOKED_RABBIT
+    - BREAD
+    - MUSHROOM_STEW
+    - RABBIT_STEW
+    - BEETROOT_SOUP
+    - PUMPKIN_PIE
+    - BAKED_POTATO
+    - HONEY_BOTTLE
+    - CARROT
+    - APPLE
+    - MELON_SLICE
+    - COOKIE
+    - POTATO
+    - BEETROOT
+  blacklist:
+    - ROTTEN_FLESH
+    - PUFFERFISH
+    - SPIDER_EYE
+    - POISONOUS_POTATO
+    - CHORUS_FRUIT
+    - SUSPICIOUS_STEW
+
+# ====== InventoryManager 背包管理 ======
+inventoryManager:
+  enabled: false
+  autoDrop:
+    - ROTTEN_FLESH
+    - BONE
+    - STRING
+    - GUNPOWDER
+    - SPIDER_EYE
+    - ARROW
+    - STICK
+    - FLINT
+    - LEATHER
+    - FEATHER
+    - RAW_PORKCHOP
+    - RAW_BEEF
+    - RAW_CHICKEN
+    - RAW_MUTTON
+    - RAW_RABBIT
+    - RAW_COD
+    - RAW_SALMON
+  autoDropInterval: 30
+  durabilityAlertThreshold: 10
+  autoRefill:
+    enabled: false
+    threshold: 20
+    items: []
+    # 物品不足时输出警告的物品列表（支持物品ID或物品名）
+    # 示例：["golden_apple", "totem_of_undying", "321"]
+    alertItems:
+      - golden_apple
+      - totem_of_undying
+  mending:
+    enabled: false
+    durabilityThreshold: 10
+  autoHotbarSwitch:
+    enabled: false
+    interval: 2
+    watchItems: []
+  viewEnabled: true
+  # 更好装备检测提示（因协议限制无法自动换装，仅提示玩家）
+  betterArmorAlert:
+    enabled: true
+  # 副手图腾补充配置
+  totem:
+    # 图腾专用槽位 (0-8)，默认8（最后一个槽位）
+    # 图腾会移动到这个槽位，然后通过SWAP_HANDS换到副手
+    dedicatedSlot: 8
+
+# ====== ChestData 箱子数据加密 ======
+chestData:
+  enabled: true
+  encryptionKey: ""
+
+# ====== ChestScanner 容器自动扫描 ======
+chestScanner:
+  enabled: false
+  # 水平扫描范围（方块数）
+  scanRange: 32
+
+  # 扫描高度范围
+  # 方式一（推荐）：通过 min/max 指定连续高度范围
+  # 方式二：通过 layers 指定具体高度层（设置 discrete: true 时生效）
+  scanHeight:
+    # 连续高度范围（最常用）
+    min: -64
+    max: 320
+
+    # 是否使用离散高度层模式
+    # false = 扫描 min~max 的所有层
+    # true  = 仅扫描 layers 中列出的具体 Y 坐标
+    discrete: false
+
+    # 离散高度层列表（仅 discrete: true 时使用）
+    # 例如：扫描海平面层和地下矿洞层
+    # layers:
+    #   - 64    # 海平面
+    #   - 11    # 钻石层
+    #   - -16   # 深层
+
+# ====== AntiAFK 防挂机 ======
+antiAfk:
+  enabled: false
+  actionInterval: 180
+  actions:
+    - ROTATE
+    - JUMP
+    - SWING
+  rotateRange: 30
