@@ -60,49 +60,6 @@ public class InventoryFeature {
     // 记录原手持（用于经验修补归还）
     private int savedHotbarSlot = -1;
 
-    // Bug-1 Fix: Instant refill triggered from PacketListener when hotbar item < 5
-    /** Instant refill for a specific hotbar slot (called from PacketListener) */
-    public void triggerInstantRefill(int hotbarIndex) {
-        if (!enabled) return;
-        long now = System.currentTimeMillis();
-        // Debounce: only allow one instant refill per hotbar slot every 2 seconds
-        if (now - lastInstantRefillTime < 2000) return;
-        lastInstantRefillTime = now;
-
-        InventoryManager inv = MovementSync.INSTANCE.getInventoryManager();
-        ItemStack[] inventory = inv.getInventory();
-        if (inventory == null) return;
-
-        int slot = 36 + hotbarIndex;
-        if (slot >= inventory.length) return;
-        ItemStack item = inventory[slot];
-        if (item == null) return;
-
-        ItemRegistry.ItemEntry entry = ItemRegistry.Instance.getItem(item.getId());
-        if (entry == null || entry.getStackSize() <= 1) return; // Skip non-stackable
-
-        int currentCount = item.getAmount();
-        if (currentCount >= 5) return; // Already above threshold
-
-        // Search main inventory for same item type
-        String targetName = entry.getName();
-        for (int s = 9; s < 36; s++) {
-            if (s >= inventory.length) continue;
-            ItemStack candidate = inventory[s];
-            if (candidate == null) continue;
-            ItemRegistry.ItemEntry candEntry = ItemRegistry.Instance.getItem(candidate.getId());
-            if (candEntry == null) continue;
-            if (targetName.equals(candEntry.getName())) {
-                if (shiftMoveToHotbar(s, hotbarIndex)) {
-                    log.info("[InventoryFeature] Instant refill hotbar[{}]: {} x{} -> refilled",
-                            hotbarIndex, targetName, currentCount);
-                }
-                break;
-            }
-        }
-    }
-    private volatile long lastInstantRefillTime = 0;
-
     public void enable() {
         if (enabled) return;
         enabled = true;
@@ -164,21 +121,15 @@ public class InventoryFeature {
             lastRefillTime = now;
         }
 
-        // 4. 经验修补
+        // 4. 经验修补（无论是否需要修补，都输出轮询日志）
         if (cfg.isInventoryMendingEnabled() && now - lastMendingTime >= 8000) {
-            log.info("[InventoryFeature] 经验修补: 进行装备检查...");
+            log.info("[InventoryFeature] [经验修补轮询] 开始检查...");
             int repaired = doMending(cfg);
             if (repaired > 0) log.info("[InventoryFeature] 经验修补: 修复了 {} 件装备", repaired);
             lastMendingTime = now;
         }
 
-        // 5. 快捷栏自动切换
-        if (cfg.isInventoryAutoHotbarSwitchEnabled() && now - lastHotbarSwitchTime >= 2000) {
-            doAutoHotbarSwitch(cfg);
-            lastHotbarSwitchTime = now;
-        }
-
-        // 6. 更好的装备检测提示（每30秒一次）
+        // 5. 更好的装备检测提示（每30秒一次）
         if (cfg.isBetterArmorAlertEnabled() && now - lastBetterArmorCheckTime >= 30_000) {
             checkBetterArmor(cfg);
             lastBetterArmorCheckTime = now;
@@ -221,9 +172,16 @@ public class InventoryFeature {
             if (currentDur < 0) continue;
 
             int percent = (currentDur * 100) / maxDur;
+            String key = itemName + "_" + slot;
+
             if (percent <= thresholdPercent) {
-                log.warn("[InventoryFeature] {} 耐久度过低: {}% ({}/{})",
-                        slotNames[i], percent, currentDur, maxDur);
+                if (!alertedItems.contains(key)) {
+                    log.warn("[InventoryFeature] {} 耐久度过低: {}% ({}/{})",
+                            slotNames[i], percent, currentDur, maxDur);
+                    alertedItems.add(key);
+                }
+            } else {
+                alertedItems.remove(key);
             }
         }
     }
@@ -231,13 +189,16 @@ public class InventoryFeature {
     private int getItemCurrentDurability(ItemStack item, int maxDurability) {
         try {
             var dataComponents = item.getDataComponentsPatch();
-            if (dataComponents == null) return -1;
-            var components = dataComponents.getDataComponents();
-            if (components == null || components.isEmpty()) return -1;
-            for (var entry : components.entrySet()) {
-                String keyStr = entry.getKey().getKey().toString();
-                if (keyStr.contains("damage")) {
-                    return maxDurability - ((Number) entry.getValue().getValue()).intValue();
+            if (dataComponents != null) {
+                var field = dataComponents.getClass().getDeclaredField("values");
+                field.setAccessible(true);
+                @SuppressWarnings("unchecked")
+                Map<Object, Object> values = (Map<Object, Object>) field.get(dataComponents);
+                for (Map.Entry<Object, Object> e : values.entrySet()) {
+                    String key = e.getKey().toString();
+                    if (key.contains("Damage") || key.contains("damage")) {
+                        return maxDurability - ((Number) e.getValue()).intValue();
+                    }
                 }
             }
         } catch (Exception ignored) {}
@@ -434,222 +395,130 @@ public class InventoryFeature {
 
     private int doMending(ConfigManager cfg) {
         int threshold = cfg.getInventoryMendingThreshold();
-        log.info("[Mending] ========== 开始经验修补检查 阈值={}% ==========", threshold);
-        
         InventoryManager inv = MovementSync.INSTANCE.getInventoryManager();
         ItemStack[] inventory = inv.getInventory();
-        if (inventory == null) {
-            log.info("[Mending] inventory 为 null，退出");
-            return 0;
-        }
-        log.info("[Mending] inventory 长度={}", inventory.length);
+        if (inventory == null) return 0;
 
         // 1. 找 XP 瓶
-        log.info("[Mending] Step 1: 搜索经验瓶...");
-        int xpHotbarSlot = findItemInHotbarByName("EXPERIENCE_BOTTLE");
-        log.info("[Mending] 快捷栏搜索结果: xpHotbarSlot={}", xpHotbarSlot);
-        
+        int xpHotbarSlot = findItemIdInHotbar(XP_BOTTLE_ID);
         if (xpHotbarSlot < 0) {
-            int xpInvSlot = findItemInInventoryByName("EXPERIENCE_BOTTLE");
-            log.info("[Mending] 背包搜索结果: xpInvSlot={}", xpInvSlot);
-            
+            int xpInvSlot = findItemIdInInventory(XP_BOTTLE_ID);
             if (xpInvSlot < 0) {
-                log.info("[Mending] 没有找到经验瓶，退出");
+                log.info("[InventoryFeature] [经验修补轮询] 背包中没有经验瓶，跳过");
                 return 0;
             }
-            
             int emptyHotbar = findEmptyHotbarSlot(inventory);
-            log.info("[Mending] 空快捷栏槽位: emptyHotbar={}", emptyHotbar);
             if (emptyHotbar < 0) emptyHotbar = 8;
-            
-            log.info("[Mending] 尝试移动经验瓶从背包槽位 {} 到快捷栏槽位 {}...", xpInvSlot, emptyHotbar);
-            boolean moved = moveToHotbar(xpInvSlot, emptyHotbar);
-            log.info("[Mending] 移动结果: {}", moved);
-            
-            if (!moved) {
-                log.info("[Mending] 无法移动经验瓶到快捷栏，退出");
-                return 0;
-            }
+            if (!moveToHotbar(xpInvSlot, emptyHotbar)) return 0;
             xpHotbarSlot = emptyHotbar;
         }
-        log.info("[Mending] 最终经验瓶位置: 快捷栏槽位 {} (协议槽位 {})", xpHotbarSlot, 36 + xpHotbarSlot);
 
-        // 2. 找需要修补的装备
-        log.info("[Mending] Step 2: 检查护甲槽位 (5-8)...");
+        // 2. 找需要修补的装备，并计算总耐久亏损
         List<Integer> repairSlots = new ArrayList<>();
-        
+        int totalDurabilityLost = 0; // 总耐久亏损量（用于计算需要多少瓶）
         for (int slot = 5; slot <= 8; slot++) {
-            log.info("[Mending] --- 检查槽位 {} ---", slot);
-            
-            if (slot >= inventory.length) {
-                log.info("[Mending] 槽位 {} >= inventory.length {}，跳过", slot, inventory.length);
-                continue;
-            }
-            
+            if (slot >= inventory.length) continue;
             ItemStack item = inventory[slot];
-            if (item == null) {
-                log.info("[Mending] 槽位 {} 物品为 null，跳过", slot);
-                continue;
-            }
-            
-            log.info("[Mending] 槽位 {} 物品 itemId={}", slot, item.getId());
-            
+            if (item == null) continue;
             ItemRegistry.ItemEntry entry = ItemRegistry.Instance.getItem(item.getId());
-            if (entry == null) {
-                log.info("[Mending] 槽位 {} 物品无注册信息，跳过", slot);
-                continue;
-            }
-            
-            String itemName = entry.getName();
-            log.info("[Mending] 槽位 {} 物品名称: {}", slot, itemName);
-            
-            int maxDur = getMaxDurability(itemName);
-            log.info("[Mending] {} 最大耐久: maxDur={}", itemName, maxDur);
-            
-            if (maxDur <= 0) {
-                log.info("[Mending] {} maxDur <= 0，无法确定耐久，跳过", itemName);
-                continue;
-            }
-            
+            if (entry == null) continue;
+            int maxDur = getMaxDurability(entry.getName());
+            if (maxDur <= 0) continue;
             int currentDur = getItemCurrentDurability(item, maxDur);
-            log.info("[Mending] {} 当前耐久: currentDur={}", itemName, currentDur);
-            
-            if (currentDur < 0) {
-                log.info("[Mending] {} 无法解析当前耐久，跳过", itemName);
-                continue;
-            }
-            
-            int percent = (currentDur * 100) / maxDur;
-            log.info("[Mending] {} 耐久百分比: {}% (阈值 {}%)", itemName, percent, threshold);
-            
-            if (percent <= threshold) {
-                log.info("[Mending] {} {}% <= {}%，加入修补列表", itemName, percent, threshold);
+            if (currentDur < 0) continue;
+            int durabilityPercent = (currentDur * 100) / maxDur;
+            if (durabilityPercent <= threshold) {
                 repairSlots.add(slot);
-            } else {
-                log.info("[Mending] {} {}% > {}%，无需修补", itemName, percent, threshold);
+                // 亏损量 = 满耐久 - 当前耐久
+                totalDurabilityLost += (maxDur - currentDur);
             }
         }
 
-        // 检查主手
-        int heldSlot = inv.getHeldSlot();
-        int handSlot = 36 + heldSlot;
-        log.info("[Mending] Step 3: 检查主手 heldSlot={} protocolSlot={}", heldSlot, handSlot);
-        
+        int handSlot = 36 + inv.getHeldSlot();
         if (handSlot < inventory.length) {
             ItemStack hand = inventory[handSlot];
-            if (hand == null) {
-                log.info("[Mending] 主手为空");
-            } else {
-                log.info("[Mending] 主手物品 itemId={}", hand.getId());
+            if (hand != null) {
                 ItemRegistry.ItemEntry entry = ItemRegistry.Instance.getItem(hand.getId());
-                if (entry == null) {
-                    log.info("[Mending] 主手物品无注册信息");
-                } else {
-                    String itemName = entry.getName();
-                    log.info("[Mending] 主手物品名称: {}", itemName);
-                    
-                    int maxDur = getMaxDurability(itemName);
-                    log.info("[Mending] 主手 {} 最大耐久: maxDur={}", itemName, maxDur);
-                    
+                if (entry != null) {
+                    int maxDur = getMaxDurability(entry.getName());
                     if (maxDur > 0) {
                         int currentDur = getItemCurrentDurability(hand, maxDur);
-                        log.info("[Mending] 主手 {} 当前耐久: currentDur={}", itemName, currentDur);
-                        
                         if (currentDur >= 0) {
-                            int percent = (currentDur * 100) / maxDur;
-                            log.info("[Mending] 主手 {} 耐久百分比: {}% (阈值 {}%)", itemName, percent, threshold);
-                            
-                            if (percent <= threshold) {
-                                log.info("[Mending] 主手 {} {}% <= {}%，加入修补列表", itemName, percent, threshold);
+                            int durabilityPercent = (currentDur * 100) / maxDur;
+                            if (durabilityPercent <= threshold) {
                                 repairSlots.add(handSlot);
-                            } else {
-                                log.info("[Mending] 主手 {} {}% > {}%，无需修补", itemName, percent, threshold);
+                                totalDurabilityLost += (maxDur - currentDur);
                             }
-                        } else {
-                            log.info("[Mending] 主手 {} 无法解析当前耐久", itemName);
                         }
-                    } else {
-                        log.info("[Mending] 主手 {} maxDur={} <= 0，跳过", itemName, maxDur);
                     }
                 }
             }
-        } else {
-            log.info("[Mending] handSlot {} >= inventory.length {}，跳过", handSlot, inventory.length);
         }
 
-        log.info("[Mending] Step 4: 修补列表结果 repairSlots={}", repairSlots);
-        
         if (repairSlots.isEmpty()) {
-            log.info("[Mending] 没有需要修补的装备，退出");
+            log.info("[InventoryFeature] [经验修补轮询] 无待修补装备，跳过");
             return 0;
         }
-        log.info("[Mending] 检测到 {} 件装备需要修补: {}", repairSlots.size(), repairSlots);
 
-        // 3. 执行经验瓶使用
-        final int xpSlot = xpHotbarSlot;
-        final int originalSlot = heldSlot;
-        log.info("[Mending] Step 5: 准备执行 ActionMovement xpSlot={} originalSlot={}", xpSlot, originalSlot);
+        // 计算需要多少瓶：经验瓶平均修复 12 点耐久（每瓶 3-11 XP × 2 耐久）
+        int bottlesNeeded = Math.max(1, (totalDurabilityLost + 11) / 12);
+        log.info("[InventoryFeature] 经验修补：检测到 {} 件待修装备，耐久亏损 {}，需 {} 瓶经验瓶",
+                repairSlots.size(), totalDurabilityLost, bottlesNeeded);
+
+        // 3. 使用 ActionMovement 执行经验瓶使用（多瓶）
+        final int xpSlot = xpHotbarSlot;  // lambda 需要 effectively final
+        final int originalSlot = inv.getHeldSlot();
+        final int bottles = bottlesNeeded;
 
         int[] completed = {0};
         MovementSync.INSTANCE.getMovementController().insertMovement(
             new ActionMovement(() -> {
-                log.info("[Mending] >>> ActionMovement 开始执行");
-                
-                log.info("[Mending] >>> 切换到经验瓶槽位 {}", xpSlot);
+                // 切换到 XP 瓶
                 inv.switchToSlot(xpSlot);
-                
                 try { Thread.sleep(80); } catch (InterruptedException ignored) {}
-                
-                log.info("[Mending] >>> 发送 UseItemPacket");
-                Bot.INSTANCE.getSession().send(
-                    new ServerboundUseItemPacket(Hand.MAIN_HAND, 0, 0f, 0f));
-                
-                try { Thread.sleep(100); } catch (InterruptedException ignored) {}
-                
-                log.info("[Mending] >>> 发送 SwingPacket");
-                Bot.INSTANCE.getSession().send(
-                    new ServerboundSwingPacket(Hand.MAIN_HAND));
-                
-                log.info("[Mending] >>> 切换回原槽位 {}", originalSlot);
+
+                // 使用多瓶经验瓶
+                for (int i = 0; i < bottles; i++) {
+                    Bot.INSTANCE.getSession().send(
+                        new ServerboundUseItemPacket(Hand.MAIN_HAND, 0, 0f, 0f));
+                    try { Thread.sleep(80); } catch (InterruptedException ignored) {}
+                    Bot.INSTANCE.getSession().send(
+                        new ServerboundSwingPacket(Hand.MAIN_HAND));
+                    try { Thread.sleep(150); } catch (InterruptedException ignored) {}
+                }
+
+                // 归还原手持
                 inv.switchToSlot(originalSlot);
-                
-                log.info("[Mending] >>> ActionMovement 执行完成");
                 synchronized (completed) {
                     completed[0] = 1;
                     completed.notify();
                 }
             }, 0)
         );
-        log.info("[Mending] ActionMovement 已插入，等待执行...");
 
-        // 等待完成
-        log.info("[Mending] Step 6: 等待 ActionMovement 完成（最多3秒）");
+        // 等待 ActionMovement 执行完成（超时按瓶数递增）
         synchronized (completed) {
             while (completed[0] == 0) {
-                try { completed.wait(3000); } catch (InterruptedException ignored) { break; }
+                try { completed.wait(3000 + bottles * 300); } catch (InterruptedException ignored) { break; }
             }
         }
-        log.info("[Mending] 等待结束 completed={}", completed[0]);
 
-        // 4. 输出修补日志
-        log.info("[Mending] Step 7: 输出修补结果");
+        // 4. 清除之前的所有经验瓶警报，确保下次还能再提醒
+        alertedMending.clear();
+
+        // 5. 输出修补日志
         int repaired = 0;
         for (int repairSlot : repairSlots) {
             String key = "mending_" + repairSlot;
-            if (alertedMending.contains(key)) {
-                log.info("[Mending] 槽位 {} 已在 alertedMending 中，跳过日志", repairSlot);
-                continue;
-            }
 
             ItemStack item = inventory[repairSlot];
             ItemRegistry.ItemEntry entry = item != null ? ItemRegistry.Instance.getItem(item.getId()) : null;
             String itemName = entry != null ? entry.getName() : "unknown";
-            log.info("[Mending] ✓ 对 {} (槽位{}) 使用经验瓶修补", itemName, repairSlot);
+            log.info("[InventoryFeature] 对 {} 使用经验瓶修补（使用了 {} 瓶）", itemName, bottles);
             alertedMending.add(key);
             repaired++;
         }
-        
-        log.info("[Mending] ========== 经验修补完成 repaired={} ==========", repaired);
+
         return repaired;
     }
 
@@ -1153,14 +1022,14 @@ public class InventoryFeature {
         InventoryManager inv = MovementSync.INSTANCE.getInventoryManager();
         ItemStack[] invData = (inv != null) ? inv.getInventory() : null;
         if (invData == null || invData.length <= targetEquipmentSlot) {
-            log.debug("[InventoryFeature] autoEquip: inventory为空或槽位无效");
+            log.debug("[autoequip] inventory为空或槽位无效");
             return false;
         }
 
         // 步骤1：检查当前装备槽是否有物品
         ItemStack currentEquipment = invData[targetEquipmentSlot];
         if (currentEquipment != null) {
-            log.debug("[InventoryFeature] 装备槽{}已有物品，无需更换", targetEquipmentSlot);
+            log.debug("[autoequip] 装备槽{}已有物品，无需更换", targetEquipmentSlot);
             return false;
         }
 
@@ -1187,12 +1056,12 @@ public class InventoryFeature {
         if (emptyHotbar >= 0) {
             // 有空槽，用空槽
             targetHotbarSlot = emptyHotbar;
-            log.debug("[InventoryFeature] autoEquip: 使用快捷栏空槽{}", emptyHotbar);
+            log.debug("[autoequip] 使用快捷栏空槽{}", emptyHotbar);
         } else {
             // 没有空槽，用配置的专用槽位
             int dedicatedSlot = SurvivalPlugin.INSTANCE.getConfigManager().getEquipmentDedicatedSlot();
             targetHotbarSlot = dedicatedSlot;
-            log.debug("[InventoryFeature] autoEquip: 无空槽，使用专用槽位{}", dedicatedSlot);
+            log.debug("[autoequip] 无空槽，使用专用槽位{}", dedicatedSlot);
 
             // 如果专用槽有物品，先丢弃
             int dedicatedSlotPos = 36 + dedicatedSlot;
@@ -1212,7 +1081,7 @@ public class InventoryFeature {
             sleep(80);
         } else {
             // 物品在背包，需要先放到快捷栏
-            log.info("[InventoryFeature] autoEquip: 物品在背包槽位{}，需手动移动", foundSlot);
+            log.info("[autoequip] 物品在背包槽位{}，需手动移动", foundSlot);
             return false;
         }
 
@@ -1227,7 +1096,7 @@ public class InventoryFeature {
         if (session != null) {
             // 发送使用物品包（右键）来穿戴装备
             session.send(new ServerboundUseItemPacket(Hand.MAIN_HAND, 0, 0f, 0f));
-            log.info("[InventoryFeature] autoEquip: 已尝试穿戴装备到槽位{}", targetEquipmentSlot);
+            log.info("[autoequip] 已尝试穿戴装备到槽位{}", targetEquipmentSlot);
         }
 
         return true;
@@ -1359,37 +1228,6 @@ public class InventoryFeature {
             if (name.contains(wu) || wu.contains(name)) return true;
         }
         return false;
-    }
-
-    private int findItemInHotbarByName(String name) {
-        InventoryManager inv = MovementSync.INSTANCE.getInventoryManager();
-        ItemStack[] inventory = inv.getInventory();
-        if (inventory == null) return -1;
-        for (int h = 0; h < 9; h++) {
-            int slot = 36 + h;
-            if (slot < inventory.length && inventory[slot] != null) {
-                ItemRegistry.ItemEntry entry = ItemRegistry.Instance.getItem(inventory[slot].getId());
-                if (entry != null && entry.getName().contains(name)) {
-                    return h;
-                }
-            }
-        }
-        return -1;
-    }
-
-    private int findItemInInventoryByName(String name) {
-        InventoryManager inv = MovementSync.INSTANCE.getInventoryManager();
-        ItemStack[] inventory = inv.getInventory();
-        if (inventory == null) return -1;
-        for (int s = 9; s < 36; s++) {
-            if (s < inventory.length && inventory[s] != null) {
-                ItemRegistry.ItemEntry entry = ItemRegistry.Instance.getItem(inventory[s].getId());
-                if (entry != null && entry.getName().contains(name)) {
-                    return s;
-                }
-            }
-        }
-        return -1;
     }
 
     private int findItemIdInHotbar(int itemId) {

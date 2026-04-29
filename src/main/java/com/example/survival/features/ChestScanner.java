@@ -50,14 +50,23 @@ public class ChestScanner implements Listener {
     private ScheduledExecutorService scheduler;
     private final ConcurrentHashMap<ScanTarget, int[]> openRetries = new ConcurrentHashMap<>();
 
-    // ====== 可配置参数 ======
-    private int scanRange = 32;
-    private int scanMinY = -64;
-    private int scanMaxY = 320;
+    // 已扫描位置持久化
+    private final java.nio.file.Path scannedPositionsFile;
+    private volatile boolean dirty = false; // 是否有未保存的变更
+
     private static final int MAX_RANGE = 200;
     private static final int MAX_OPEN_RETRIES = 15;
     private boolean discreteHeight = false;
     private List<Integer> heightLayers = new ArrayList<>();
+
+    public ChestScanner() {
+        this.scannedPositionsFile = java.nio.file.Paths.get("survival", "container", "scanned_positions.txt");
+    }
+
+    // ====== 可配置参数 ======
+    private int scanRange = 32;
+    private int scanMinY = -64;
+    private int scanMaxY = 320;
 
     public void loadConfig() {
         ConfigManager cfg = SurvivalPlugin.INSTANCE.getConfigManager();
@@ -104,10 +113,13 @@ public class ChestScanner implements Listener {
             Thread t = new Thread(r, "ChestScanner"); t.setDaemon(true); return t;
         });
         loadConfig();
+        // 启动时从硬盘加载已扫描位置
+        int loaded = loadScannedPositions();
+        log.info("[ChestScanner] 从硬盘加载了 {} 个已扫描位置", loaded);
         scheduler.submit(() -> discoverAndProcess());
         // 定期(5秒)检查新容器
         scheduler.scheduleAtFixedRate(() -> discoverAndProcess(), 5, 5, TimeUnit.SECONDS);
-        log.info("[ChestScanner] 🟢 开始扫描 (已扫描{}个容器)", scanned.size());
+        log.info("[ChestScanner] 🟢 开始扫描 (已加载{}个，队列{})", scanned.size(), queue.size());
     }
 
     public void stopScan() {
@@ -116,13 +128,61 @@ public class ChestScanner implements Listener {
         if (scheduler != null) { scheduler.shutdownNow(); scheduler = null; }
         closeContainer();
         queue.clear(); currentTarget = null; waitingForContent.set(false);
-        log.info("[ChestScanner] 🔴 已停止 (本次扫描{}个容器)", scanned.size());
+        // 停止时保存扫描记录到硬盘
+        saveScannedPositions();
+        log.info("[ChestScanner] 🔴 已停止 (本次共扫描{}个容器)", scanned.size());
     }
 
     public void resetScanned() {
         int c = scanned.size();
         scanned.clear();
-        log.info("[ChestScanner] 清除了{}个容器的扫描记录", c);
+        dirty = false;
+        // 同时删除硬盘上的记录文件
+        try {
+            java.nio.file.Files.deleteIfExists(scannedPositionsFile);
+        } catch (Exception ignored) {}
+        log.info("[ChestScanner] 清除{}个容器的扫描记录（含硬盘文件）", c);
+    }
+
+    /**
+     * 从硬盘加载已扫描位置到内存（去重追加）
+     * 文件格式：每行一个位置，格式: x,y,z
+     */
+    private int loadScannedPositions() {
+        if (!java.nio.file.Files.exists(scannedPositionsFile)) return 0;
+        int count = 0;
+        try {
+            java.nio.file.Files.createDirectories(scannedPositionsFile.getParent());
+            var lines = java.nio.file.Files.readAllLines(scannedPositionsFile, java.nio.charset.StandardCharsets.UTF_8);
+            for (String line : lines) {
+                String trimmed = line.trim();
+                if (trimmed.isEmpty()) continue;
+                if (scanned.add(trimmed)) count++;
+            }
+        } catch (Exception e) {
+            log.warn("[ChestScanner] 加载扫描记录失败: {}", e.getMessage());
+        }
+        return count;
+    }
+
+    /**
+     * 将内存中的已扫描位置批量写入硬盘（仅在有变更时）
+     * 文件格式：每行一个位置，格式: x,y,z
+     */
+    private void saveScannedPositions() {
+        if (!dirty) {
+            log.debug("[ChestScanner] 无变更，跳过保存");
+            return;
+        }
+        try {
+            java.nio.file.Files.createDirectories(scannedPositionsFile.getParent());
+            var lines = new java.util.ArrayList<String>(scanned);
+            java.nio.file.Files.write(scannedPositionsFile, lines, java.nio.charset.StandardCharsets.UTF_8);
+            dirty = false;
+            log.info("[ChestScanner] 已保存{}个位置到硬盘", lines.size());
+        } catch (Exception e) {
+            log.error("[ChestScanner] 保存扫描记录失败: {}", e.getMessage());
+        }
     }
 
     public int getScannedCount() { return scanned.size(); }
@@ -207,6 +267,7 @@ public class ChestScanner implements Listener {
                             String key = x + "," + y + "," + z;
                             if (scanned.contains(key)) continue;
                             scanned.add(key);
+                            dirty = true;
                             queue.add(new ScanTarget(x, y, z));
                             found++;
                         }
@@ -225,6 +286,7 @@ public class ChestScanner implements Listener {
                         String key = x + "," + y + "," + z;
                         if (scanned.contains(key)) continue;
                         scanned.add(key);
+                        dirty = true;
                         queue.add(new ScanTarget(x, y, z));
                         found++;
                     }
@@ -256,12 +318,12 @@ public class ChestScanner implements Listener {
         queue.remove(nearest);
         currentTarget = nearest;
         final ScanTarget target = nearest;
-        log.info("[ChestScanner] 前往容器 [{},{},{}] (剩余{}个, 最近{:.1f}格)", target.x, target.y, target.z, queue.size(), minDist);
+        log.info("[ChestScanner] 前往容器 [{},{},{}] (剩余{}个, 最近{}格)", target.x, target.y, target.z, queue.size(), String.format("%.1f", minDist));
         // 使用 MovementSync 寻路：设目标并触发自动寻路
         MovementSync.INSTANCE.setActiveGoal(new org.joml.Vector3i(target.x, target.y, target.z));
         MovementSync.INSTANCE.triggerAutoRepath();
         // 3秒后尝试打开
-        scheduler.schedule(() -> tryOpen(target), 3000, TimeUnit.MILLISECONDS);
+        scheduler.schedule(() -> tryOpen(target), 500, TimeUnit.MILLISECONDS);
     }
 
     private void tryOpen(ScanTarget t) {
@@ -279,7 +341,7 @@ public class ChestScanner implements Listener {
             }
             // 每2秒重新触发寻路，防止 bot 卡住
             MovementSync.INSTANCE.triggerAutoRepath();
-            log.info("[ChestScanner] 距离 {:.1f} 格，等待靠近...", dist);
+            log.info("[ChestScanner] 距离 {} 格，等待靠近...", String.format("%.1f", dist));
             scheduler.schedule(() -> tryOpen(t), 2000, TimeUnit.MILLISECONDS);
             return;
         }
@@ -308,7 +370,7 @@ public class ChestScanner implements Listener {
     public void onContainerOpen(ReceivePacketEvent<ClientboundOpenScreenPacket> e) {
         if (!waitingForContent.get()) return;
         containerId = e.getPacket().getContainerId();
-        log.debug("[ChestScanner] 容器打开 id={}", containerId);
+        log.info("[ChestScanner] 📤 收到打开容器包 containerId={}", containerId);
     }
 
     @EventHandler
@@ -321,8 +383,9 @@ public class ChestScanner implements Listener {
 
         ItemStack[] items = pkt.getItems();
         int size = items != null ? items.length : 0;
+        log.info("[ChestScanner] 🔍 容器内容包: containerId={}, size={}", cid, size);
         if (size != 27 && size != 54) {
-            log.debug("[ChestScanner] 跳过{}格容器", size);
+            log.info("[ChestScanner] ⚠️ 跳过{}格容器 (非标准箱子/潜影盒)", size);
             waitingForContent.set(false); closeContainer(); finish(); return;
         }
 
@@ -335,6 +398,9 @@ public class ChestScanner implements Listener {
             String dim = "overworld"; // TODO: 获取真实维度
             List<Map<String, Object>> itemList = new ArrayList<>();
             boolean empty = true;
+            // 用于日志摘要
+            StringBuilder summary = new StringBuilder();
+            Map<Integer, List<String>> shulkerContents = new LinkedHashMap<>();
             if (items != null) {
                 for (int i = 0; i < items.length; i++) {
                     ItemStack it = items[i];
@@ -344,11 +410,20 @@ public class ChestScanner implements Listener {
                     String name = entry != null ? entry.getName() : "UNKNOWN";
                     int count = Math.max(1, it.getAmount());
                     String nameUpper = name.toUpperCase();
-                    // 记录潜影盒
+                    // 记录潜影盒及其内容
                     if (nameUpper.contains("SHULKER_BOX")) {
                         String disp = getDisplayName(it, name);
+                        String shulkerInfo = disp + " x" + count;
+                        summary.append(shulkerInfo).append(", ");
                         SurvivalPlugin.INSTANCE.getContainerDataManager()
                             .saveShulkerRecord(dim, t.x, t.y, t.z, i, disp, name, count);
+                        // 潜影盒内容需要后续处理
+                    }
+                    // 普通物品直接加入摘要
+                    else {
+                        String dispName = (entry != null && entry.getDisplayName() != null) 
+                            ? entry.getDisplayName() : name;
+                        summary.append(dispName).append("x").append(count).append(", ");
                     }
                     Map<String, Object> m = new LinkedHashMap<>();
                     m.put("slot", i); m.put("id", it.getId()); m.put("name", name); m.put("count", count);
@@ -359,11 +434,14 @@ public class ChestScanner implements Listener {
                     itemList.add(m);
                 }
             }
+            // 生成日志摘要
+            String logSummary = summary.length() > 2 
+                ? summary.substring(0, summary.length() - 2) : "(空)";
             String json = itemsToJson(itemList);
             SurvivalPlugin.INSTANCE.getContainerDataManager()
                 .saveChestData(dim, t.x, t.y, t.z, json, 0, empty);
-            log.info("[ChestScanner] ✅ 容器 [{},{},{}] 已保存 ({}个物品{})",
-                t.x, t.y, t.z, itemList.size(), empty ? ", 空" : "");
+            log.info("[ChestScanner] ✅ 容器 [{},{},{}]: {}",
+                t.x, t.y, t.z, logSummary);
         } catch (Exception e) {
             log.error("[ChestScanner] 保存失败: {}", e.getMessage());
         }

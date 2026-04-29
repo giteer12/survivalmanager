@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # SurvivalManager - Xinbot 生存管理插件
 
 基于 MovementSync 的 Xinbot 生存管理插件，提供自动化生存辅助功能。
@@ -160,3 +161,7 @@ SurvivalPlugin (主类)
 ## 许可证
 
 MIT License
+=======
+# survivalmanager
+a developing 2b2t auto structure bot  based on xinbot
+>>>>>>> ca06254eb1e0ca1f1a1a0ac5e6e893b05ecba7ae

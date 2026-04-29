@@ -33,6 +33,11 @@ public class EndermanManager {
     private volatile boolean enabled = false;
     private ScheduledExecutorService scheduler;
 
+    // 避免看向末影人 - 上次仰头时间（防止日志刷屏）
+    private long lastAvoidLookLogTime = 0;
+    // 主动看向末影人 - 上次日志时间
+    private long lastLookAtLogTime = 0;
+
     // 追击列表
     private final Map<Integer, Long> chasingEntities = new ConcurrentHashMap<>();
 
@@ -52,7 +57,8 @@ public class EndermanManager {
             return t;
         });
         scheduler.scheduleAtFixedRate(this::tick, 200, 100, TimeUnit.MILLISECONDS);
-        log.info("[EndermanManager] 已启用");
+        log.info("[EndermanManager] 已启用 (避免看向末影人: {})",
+            SurvivalPlugin.INSTANCE.getConfigManager().isEndermanAvoidLookAt() ? "开" : "关");
     }
 
     public void disable() {
@@ -89,6 +95,13 @@ public class EndermanManager {
         "TRIDENT", "SNOWBALL", "EGG",
         "FALLING_BLOCK", "MINECART", "BOAT", "CHEST_BOAT",
         "ARMOR_STAND", "EVOKER_FANGS", "MARKER",
+        // 被动生物（家畜）
+        "COW", "PIG", "SHEEP", "CHICKEN", "RABBIT",
+        "HORSE", "DONKEY", "MULE", "LLAMA", "CAMEL",
+        "TRADER_LLAMA", "FOX", "WOLF", "CAT", "OCELOT",
+        "PARROT", "PANDA", "SNIFFER", "TORKEY", "SQUID",
+        "GLOW_SQUID", "BAT", "IRON_GOLEM", "SNOW_GOLEM",
+        "VILLAGER", "WANDERING_TRADER", "MUSHROOM_COW",
         // 自伤来源（attackerId < 0 的常见原因）
         "ANVIL", "HOT_FLOOR", "MAGMA_BLOCK",
         "LAVA", "FIRE", "CACTUS", "SWEET_BERRY_BUSH",
@@ -99,7 +112,9 @@ public class EndermanManager {
         if (!enabled) return;
 
         ConfigManager cfg = SurvivalPlugin.INSTANCE.getConfigManager();
-        if (!cfg.isEndermanKillIfAttacked()) return;
+        // 使用独立的 retaliate 模块配置
+        if (!cfg.isRetaliateEnabled()) return;
+        if (!cfg.isRetaliateKillIfAttacked()) return;
 
         // ---------- 自伤（铁砧/摔落/岩浆块等）：静默忽略 ----------
         if (attackerId < 0) {
@@ -329,15 +344,9 @@ public class EndermanManager {
             }
 
             double dist = playerPos.distance(targetPos);
-            double attackRange = SurvivalPlugin.INSTANCE.getConfigManager().getEndermanAttackRange();
-            if (dist > attackRange) {
-                // 目标超出范围则移除（下次被攻击时重新加入追击列表）
-                it.remove();
-                lastAttackTime.remove(entityId);
-                attackFailCount.remove(entityId);
-                log.info("[EndermanManager] 目标#{}超出范围({}格)，取消追击", entityId, String.format("%.1f", dist));
-                continue;
-            }
+            double attackRange = SurvivalPlugin.INSTANCE.getConfigManager().getRetaliateAttackRange();
+            // 不因距离远取消追击，持续追击直到目标死亡
+            // 只有目标消失或位置无效才取消
 
             // 冷却检查
             Long lastAtk = lastAttackTime.get(entityId);
@@ -414,6 +423,247 @@ public class EndermanManager {
                     actionManager.release(ActionManager.ActionType.ATTACK);
                 }
             }
+        }
+
+        // ========== 避免看向末影人 ==========
+        if (SurvivalPlugin.INSTANCE.getConfigManager().isEndermanAvoidLookAt()) {
+            doAvoidEndermanLook(now);
+        }
+
+        // ========== 主动看向末影人（触发攻击）==========
+        if (SurvivalPlugin.INSTANCE.getConfigManager().isEndermanLookAt()) {
+            doEndermanLookAt(now);
+        }
+    }
+
+    /**
+     * 避免看向末影人 - 移植自 Meteor Client EndermanLook 模块
+     *
+     * 核心逻辑：
+     *  1. 遍历附近所有末影人
+     *  2. 用 angleCheck() 检测玩家是否正在看向末影人（与原版 EnderMan.isBeingStaredBy 完全一致）
+     *  3. 中立末影人 → 仰头 (pitch=90) 避免对视触发仇恨
+     *  4. 愤怒末影人 → 看向它使其僵住 (stun)
+     */
+    private void doAvoidEndermanLook(long now) {
+        // 戴南瓜头时不会触发末影人仇恨，无需避免
+        if (isWearingPumpkin()) return;
+
+        var world = MovementSync.INSTANCE.getWorld();
+        if (world == null) return;
+        var entities = world.getEntities();
+        if (entities.isEmpty()) return;
+
+        float currentYaw = MovementSync.INSTANCE.yaw.get();
+        float currentPitch = MovementSync.INSTANCE.pitch.get();
+        Vector3d playerPos = MovementSync.INSTANCE.position.get();
+        if (playerPos == null) return;
+
+        // 玩家眼睛位置 (站立时眼高 = Y + 1.62)
+        double playerEyeY = playerPos.y + 1.62;
+
+        // 计算玩家视线方向（与 Minecraft 原版一致）
+        double yawRad = Math.toRadians(currentYaw);
+        double pitchRad = Math.toRadians(currentPitch);
+        double viewX = -Math.sin(yawRad) * Math.cos(pitchRad);
+        double viewY = -Math.sin(pitchRad);
+        double viewZ = Math.cos(yawRad) * Math.cos(pitchRad);
+        // viewX, viewY, viewZ 已经是单位向量 (sin²+cos²=1)
+
+        for (Entity entity : entities.values()) {
+            if (entity.getEntityId() == MovementSync.INSTANCE.entityId) continue;
+
+            // 检查是否是末影人
+            String typeName = entity.getType().name().toUpperCase();
+            if (!typeName.contains("ENDERMAN") && !typeName.equals("ENDER_MAN")) continue;
+
+            Vector3d endermanPos = entity.getPosition();
+            if (endermanPos == null) continue;
+
+            // 末影人眼睛位置 (末影人身高2.9, 眼高约2.55)
+            double endermanEyeY = endermanPos.y + 2.55;
+
+            // 计算从玩家眼睛到末影人眼睛的方向
+            double dx = endermanPos.x - playerPos.x;
+            double dy = endermanEyeY - playerEyeY;
+            double dz = endermanPos.z - playerPos.z;
+            double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
+            if (dist < 0.1) continue; // 太近了跳过
+
+            // 归一化
+            double ndx = dx / dist;
+            double ndy = dy / dist;
+            double ndz = dz / dist;
+
+            // 点积 = cos(夹角)
+            double dot = viewX * ndx + viewY * ndy + viewZ * ndz;
+
+            // 原版判定: dot > 1.0 - 0.025 / dist
+            // 即玩家正在看向末影人
+            double threshold = 1.0 - 0.025 / dist;
+            boolean isStaring = dot > threshold;
+
+            if (!isStaring) continue; // 没在看，跳过
+
+            // 检查末影人是否愤怒
+            boolean isAngry = isEndermanAngry(entity);
+
+            if (isAngry) {
+                // 愤怒末影人 → 看向它使其僵住 (stun)
+                // 计算看向末影人头部的 yaw/pitch
+                Vector3d targetHead = new Vector3d(endermanPos.x, endermanEyeY, endermanPos.z);
+                MovementSync.INSTANCE.directLookAt(targetHead);
+
+                var session = xin.bbtt.mcbot.Bot.INSTANCE.getSession();
+                if (session != null) {
+                    session.send(new ServerboundMovePlayerPosRotPacket(
+                        MovementSync.INSTANCE.onGround.get(),
+                        false,
+                        playerPos.x, playerPos.y, playerPos.z,
+                        MovementSync.INSTANCE.yaw.get(),
+                        MovementSync.INSTANCE.pitch.get()
+                    ));
+                }
+
+                if (now - lastAvoidLookLogTime > 3000) {
+                    log.info("[EndermanManager] 凝视愤怒末影人#{} (stun)", entity.getEntityId());
+                    lastAvoidLookLogTime = now;
+                }
+            } else {
+                // 中立末影人 → 仰头避免对视
+                // 保持当前 yaw，把 pitch 设为 90 (看天)
+                var session = xin.bbtt.mcbot.Bot.INSTANCE.getSession();
+                if (session != null) {
+                    session.send(new ServerboundMovePlayerPosRotPacket(
+                        MovementSync.INSTANCE.onGround.get(),
+                        false,
+                        playerPos.x, playerPos.y, playerPos.z,
+                        currentYaw,
+                        90.0f
+                    ));
+                }
+                // 同步 MovementSync 的 pitch 状态
+                MovementSync.INSTANCE.pitch.set(90.0f);
+
+                if (now - lastAvoidLookLogTime > 3000) {
+                    log.info("[EndermanManager] 避免看向末影人#{} (仰头)", entity.getEntityId());
+                    lastAvoidLookLogTime = now;
+                }
+            }
+
+            // 一次只处理一个末影人就够了
+            return;
+        }
+    }
+
+    /**
+     * 检测玩家是否戴着雕刻南瓜头
+     * 戴南瓜头看向末影人不会触发仇恨
+     */
+    private boolean isWearingPumpkin() {
+        try {
+            InventoryManager inv = MovementSync.INSTANCE.getInventoryManager();
+            var inventory = inv.getInventory();
+            if (inventory == null) return false;
+            // 头盔槽位 = 5 (盔甲槽: 5=头盔, 6=胸甲, 7=护腿, 8=靴子)
+            var helmet = inventory[5];
+            if (helmet == null) return false;
+            String name = ItemRegistry.Instance.getItem(helmet.getId()).getName().toUpperCase();
+            return name.contains("CARVED_PUMPKIN") || name.contains("PUMPKIN");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /**
+     * 检测末影人是否处于愤怒状态
+     * 
+     * Minecraft 末影人愤怒状态存储在 Entity Data (metadata) 中：
+     *  - 1.21+ 使用 data index 18 (ANGER.getTargetEntityId)
+     *  - 值 > 0 表示正在愤怒
+     *  - 另外末影人愤怒时会有 SCREAMING 状态 (index 0, bit 2)
+     */
+    private boolean isEndermanAngry(Entity enderman) {
+        try {
+            var meta = enderman.getMetadata();
+            if (meta == null) return false;
+
+            // 方式1: 检查 ANGER 目标实体 ID
+            Object angerTarget = meta.get("anger_target");
+            if (angerTarget instanceof Integer && (Integer) angerTarget > 0) return true;
+
+            // 方式2: 检查数字索引 (MC 1.21+ entity data)
+            // 末影人愤怒时 metadata 中的 screaming 标志会置位
+            Object screaming = meta.get("screaming");
+            if (screaming instanceof Boolean && (Boolean) screaming) return true;
+
+            // 方式3: 如果末影人在追击列表中，说明它已愤怒
+            if (chasingEntities.containsKey(enderman.getEntityId())) return true;
+
+        } catch (Exception e) {
+            // metadata 读取失败，保守假设不愤怒
+        }
+        return false;
+    }
+
+    /**
+     * 主动看向末影人 - 触发其攻击性（使末影人愤怒）
+     *
+     * 与 avoidLookAt 相反：主动看向附近的末影人，使其朝玩家攻击
+     * 需要配合 killIfAttacked 一起使用效果好
+     */
+    private void doEndermanLookAt(long now) {
+        var world = MovementSync.INSTANCE.getWorld();
+        if (world == null) return;
+        var entities = world.getEntities();
+        if (entities.isEmpty()) return;
+
+        Vector3d playerPos = MovementSync.INSTANCE.position.get();
+        if (playerPos == null) return;
+
+        // 玩家眼睛位置
+        double playerEyeY = playerPos.y + 1.62;
+
+        for (Entity entity : entities.values()) {
+            if (entity.getEntityId() == MovementSync.INSTANCE.entityId) continue;
+
+            // 检查是否是末影人
+            String typeName = entity.getType().name().toUpperCase();
+            if (!typeName.contains("ENDERMAN") && !typeName.equals("ENDER_MAN")) continue;
+
+            Vector3d endermanPos = entity.getPosition();
+            if (endermanPos == null) continue;
+
+            // 已愤怒的末影人不需要再看了（已经在追击列表中）
+            if (isEndermanAngry(entity)) continue;
+
+            // 检查距离
+            double dist = playerPos.distance(endermanPos);
+            if (dist > 8.0) continue; // 超过8格不看了
+
+            // 看向末影人眼睛
+            double endermanEyeY = endermanPos.y + 2.55;
+            Vector3d targetHead = new Vector3d(endermanPos.x, endermanEyeY, endermanPos.z);
+            MovementSync.INSTANCE.directLookAt(targetHead);
+
+            var session = xin.bbtt.mcbot.Bot.INSTANCE.getSession();
+            if (session != null) {
+                session.send(new ServerboundMovePlayerPosRotPacket(
+                    MovementSync.INSTANCE.onGround.get(),
+                    false,
+                    playerPos.x, playerPos.y, playerPos.z,
+                    MovementSync.INSTANCE.yaw.get(),
+                    MovementSync.INSTANCE.pitch.get()
+                ));
+            }
+
+            if (now - lastLookAtLogTime > 3000) {
+                log.info("[EndermanManager] 看向末影人#{} 以触发攻击", entity.getEntityId());
+                lastLookAtLogTime = now;
+            }
+
+            // 一次只找一个
+            return;
         }
     }
 }

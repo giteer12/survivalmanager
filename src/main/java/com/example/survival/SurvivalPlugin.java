@@ -86,44 +86,35 @@ public class SurvivalPlugin implements Plugin {
         logger.info("[SurvivalManager] 插件启用中...");
         logger.info("[SurvivalManager] 注册事件监听器...");
 
-        // ===== NoFall: 注册发包监听器，在发移动包之前拦截并强制 onGround=true =====
+        // 注册事件监听器
+        Bot.INSTANCE.getPluginManager().events().registerEvents(packetListener, this);
+
+        // ===== NoFall: 默认开启，注册发包拦截强制 onGround=true =====
         Bot.INSTANCE.getSession().addListener(new SessionAdapter() {
             @Override
             public void packetSending(PacketSendingEvent event) {
                 Packet packet = event.getPacket();
-
-                // 检查是否是移动数据包（ServerboundMovePlayerPosRotPacket）
                 String packetName = packet.getClass().getSimpleName();
-                if (!packetName.equals("ServerboundMovePlayerPosRotPacket")) {
-                    return;
-                }
-
-                // 读取 MovementSync 的速度
+                if (!packetName.equals("ServerboundMovePlayerPosRotPacket")) return;
                 double vy = MovementSync.INSTANCE.velocity.get().y;
-                if (vy < -0.5) {
-                    // 强制设置 onGround = true
+                if (vy < configManager.getNoFallVelocityThreshold()) {
                     try {
                         var field = packet.getClass().getField("onGround");
                         field.setBoolean(packet, true);
-                        logger.info("[NoFall] 速度={}, 已强制 onGround=true", String.format("%.2f", vy));
                     } catch (NoSuchFieldException e) {
-                        // 尝试找父类的字段
                         try {
                             var field = packet.getClass().getSuperclass().getField("onGround");
                             field.setBoolean(packet, true);
-                            logger.info("[NoFall] 速度={}, 已强制 onGround=true (父类)", String.format("%.2f", vy));
                         } catch (Exception ex) {
-                            logger.warn("[NoFall] 修改 onGround 失败: {}", ex.getMessage());
+                            // ignore
                         }
                     } catch (Exception e) {
-                        logger.warn("[NoFall] 修改 onGround 失败: {}", e.getMessage());
+                        // ignore
                     }
                 }
             }
         });
-
-        // 注册事件监听器
-        Bot.INSTANCE.getPluginManager().events().registerEvents(packetListener, this);
+        logger.info("[SurvivalManager] NoFall 无摔落伤害: 默认开启");
 
         // 根据配置启用功能
         if (configManager.isKillAuraEnabled()) killAura.enable();
@@ -137,8 +128,8 @@ public class SurvivalPlugin implements Plugin {
         logger.info("[SurvivalManager] 末影人管理: {}", configManager.isEndermanManagerEnabled() ? "开启" : "关闭");
         logger.info("[SurvivalManager] 自动进食: {}", configManager.isAutoEatEnabled() ? "开启" : "关闭");
         logger.info("[SurvivalManager] 背包管理: {}", configManager.isInventoryManagerEnabled() ? "开启" : "关闭");
+        logger.info("[SurvivalManager] 自动丢弃: {}", configManager.isInventoryAutoDropEnabled() ? "开启" : "关闭");
         logger.info("[SurvivalManager] 防挂机: {}", configManager.isAntiAfkEnabled() ? "开启" : "关闭");
-        logger.info("[SurvivalManager] NoFall 无摔落伤害: 开启");
         logger.info("[SurvivalManager] 箱子数据加密存储已就绪");
         logger.info("[SurvivalManager] 动作管理器已就绪");
     }

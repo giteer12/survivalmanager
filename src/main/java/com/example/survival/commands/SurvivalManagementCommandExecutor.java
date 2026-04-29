@@ -37,8 +37,11 @@ public class SurvivalManagementCommandExecutor extends SubCommandExecutor {
         });
 
         registerSubCommand("killaura", new SimpleToggleCommand("killaura", "杀戮光环"));
-        registerSubCommand("enderman", new SimpleToggleCommand("enderman", "末影人管理"));
+        registerSubCommand("avoidlookat", new SimpleToggleCommand("avoidlookat", "避免看向末影人"));
+        registerSubCommand("lookat", new SimpleToggleCommand("lookat", "看向末影人"));
+        registerSubCommand("retaliate", new SimpleToggleCommand("retaliate", "末影人反击"));
         registerSubCommand("autoeat", new SimpleToggleCommand("autoeat", "自动进食"));
+        registerSubCommand("equip", new SimpleToggleCommand("betterArmorAutoEquip", "自动穿戴更好的装备"));
         registerSubCommand("inventory", new CommandExecutor() {
             @Override
             public void onCommand(Command command, String label, String[] args) {
@@ -48,31 +51,40 @@ public class SurvivalManagementCommandExecutor extends SubCommandExecutor {
                     return;
                 }
                 String sub = args[0].toLowerCase();
+                InventoryFeature inv = SurvivalPlugin.INSTANCE.getInventoryManager();
                 switch (sub) {
-                    case "view" -> SurvivalPlugin.INSTANCE.getInventoryManager().printInventoryView();
+                    case "on" -> {
+                        inv.enable();
+                        log.info("[Inventory] ✅ 背包管理已启用");
+                    }
+                    case "off" -> {
+                        inv.disable();
+                        log.info("[Inventory] ❌ 背包管理已禁用");
+                    }
+                    case "view" -> inv.printInventoryView();
                     case "refill", "autorefill" -> handleInventorySubToggle(args, "autoRefill", "快捷栏自动补充");
                     case "mending", "repair" -> handleInventorySubToggle(args, "mending", "经验修补");
-                    case "switch", "hotbarswitch", "hotbar" -> handleInventorySubToggle(args, "autoHotbarSwitch", "快捷栏切换");
+                    case "drop", "autodrop" -> handleInventorySubToggle(args, "autoDrop", "自动丢弃");
                     default -> {
                         log.info("inventory 子命令:");
-                        log.info("  view - 查看背包物品");
-                        log.info("  refill [on/off] - 快捷栏自动补充");
-                        log.info("  mending [on/off] - 经验修补");
-                        log.info("  switch [on/off] - 快捷栏自动切换");
-                        log.info("  on/off - 开关整个背包管理");
+                        log.info("  on/off         - 开关整个背包管理");
+                        log.info("  view           - 查看背包物品");
+                        log.info("  refill [on/off]   - 快捷栏自动补充");
+                        log.info("  mending [on/off]  - 经验修补");
+                        log.info("  drop [on/off]     - 自动丢弃");
                     }
                 }
             }
 
             @Override
             public List<String> onTabComplete(Command command, String label, String[] args) {
-                if (args.length == 1) return List.of("view", "refill", "mending", "switch", "on", "off");
+                if (args.length == 1) return List.of("on", "off", "view", "refill", "mending", "drop");
+                if (args.length == 2 && (args[0].equals("on") || args[0].equals("off"))) return List.of();
                 if (args.length == 2) return List.of("on", "off");
                 return Collections.emptyList();
             }
         });
         registerSubCommand("antiafk", new SimpleToggleCommand("antiafk", "防挂机"));
-
         registerSubCommand("scanner", new ChestScannerCommand());
 
         registerSubCommand("chest", new CommandExecutor() {
@@ -142,7 +154,6 @@ public class SurvivalManagementCommandExecutor extends SubCommandExecutor {
         log.info("");
         log.info("功能控制 (on/off):");
         log.info("  killaura     - 杀戮光环");
-        log.info("  enderman     - 末影人管理");
         log.info("  autoeat      - 自动进食");
         log.info("  inventory [view] - 背包管理 (inventory view = 查看背包)");
         log.info("  antiafk      - 防挂机");
@@ -160,8 +171,7 @@ public class SurvivalManagementCommandExecutor extends SubCommandExecutor {
         log.info("  chest stats                           - 统计箱子数量");
         log.info("");
         log.info("箱子自动扫描:");
-        log.info("  scanner on/off          - 启用/禁用扫描器");
-        log.info("  scanner start/stop      - 开始/停止自动扫描");
+        log.info("  scanner start/stop    - 开始/停止扫描");
         log.info("  scanner info            - 查看状态");
         log.info("  scanner reset           - 清除已扫描记录");
         log.info("  scanner range <格数>    - 设置扫描半径");
@@ -178,9 +188,6 @@ public class SurvivalManagementCommandExecutor extends SubCommandExecutor {
         log.info("杀戮光环: {} (配置: {})",
                 SurvivalPlugin.INSTANCE.getKillAura().isEnabled() ? "运行中" : "已停止",
                 cfg.isKillAuraEnabled() ? "启用" : "禁用");
-        log.info("末影人管理: {} (配置: {})",
-                SurvivalPlugin.INSTANCE.getEndermanManager().isEnabled() ? "运行中" : "已停止",
-                cfg.isEndermanManagerEnabled() ? "启用" : "禁用");
         log.info("自动进食: {} (配置: {})",
                 SurvivalPlugin.INSTANCE.getAutoEat().isEnabled() ? "运行中" : "已停止",
                 cfg.isAutoEatEnabled() ? "启用" : "禁用");
@@ -411,10 +418,13 @@ public class SurvivalManagementCommandExecutor extends SubCommandExecutor {
         private boolean getCurrentState() {
             return switch (featureName) {
                 case "killaura" -> SurvivalPlugin.INSTANCE.getKillAura().isEnabled();
-                case "enderman" -> SurvivalPlugin.INSTANCE.getEndermanManager().isEnabled();
+                case "avoidlookat" -> SurvivalPlugin.INSTANCE.getConfigManager().isEndermanAvoidLookAt();
+                case "lookat" -> SurvivalPlugin.INSTANCE.getConfigManager().isEndermanLookAt();
+                case "retaliate" -> SurvivalPlugin.INSTANCE.getConfigManager().isRetaliateKillIfAttacked();
                 case "autoeat" -> SurvivalPlugin.INSTANCE.getAutoEat().isEnabled();
                 case "inventory" -> SurvivalPlugin.INSTANCE.getInventoryManager().isEnabled();
                 case "antiafk" -> SurvivalPlugin.INSTANCE.getAntiAFK().isEnabled();
+                case "betterArmorAutoEquip" -> SurvivalPlugin.INSTANCE.getConfigManager().isBetterArmorAutoEquipEnabled();
                 default -> false;
             };
         }
@@ -422,17 +432,20 @@ public class SurvivalManagementCommandExecutor extends SubCommandExecutor {
         private void setConfigState(boolean enabled) {
             switch (featureName) {
                 case "killaura" -> SurvivalPlugin.INSTANCE.getConfigManager().setKillAuraEnabled(enabled);
-                case "enderman" -> SurvivalPlugin.INSTANCE.getConfigManager().setEndermanManagerEnabled(enabled);
+                case "avoidlookat" -> SurvivalPlugin.INSTANCE.getConfigManager().setEndermanAvoidLookAt(enabled);
+                case "lookat" -> SurvivalPlugin.INSTANCE.getConfigManager().setEndermanLookAt(enabled);
+                case "retaliate" -> SurvivalPlugin.INSTANCE.getConfigManager().setRetaliateKillIfAttacked(enabled);
                 case "autoeat" -> SurvivalPlugin.INSTANCE.getConfigManager().setAutoEatEnabled(enabled);
                 case "inventory" -> SurvivalPlugin.INSTANCE.getConfigManager().setInventoryManagerEnabled(enabled);
                 case "antiafk" -> SurvivalPlugin.INSTANCE.getConfigManager().setAntiAfkEnabled(enabled);
+                case "betterArmorAutoEquip" -> SurvivalPlugin.INSTANCE.getConfigManager().setBetterArmorAutoEquipEnabled(enabled);
             }
         }
 
         private void enableFeature() {
             switch (featureName) {
                 case "killaura" -> SurvivalPlugin.INSTANCE.getKillAura().enable();
-                case "enderman" -> SurvivalPlugin.INSTANCE.getEndermanManager().enable();
+                case "avoidlookat", "lookat", "retaliate" -> {} // 只改配置，不单独启用功能
                 case "autoeat" -> SurvivalPlugin.INSTANCE.getAutoEat().enable();
                 case "inventory" -> SurvivalPlugin.INSTANCE.getInventoryManager().enable();
                 case "antiafk" -> SurvivalPlugin.INSTANCE.getAntiAFK().enable();
@@ -442,7 +455,7 @@ public class SurvivalManagementCommandExecutor extends SubCommandExecutor {
         private void disableFeature() {
             switch (featureName) {
                 case "killaura" -> SurvivalPlugin.INSTANCE.getKillAura().disable();
-                case "enderman" -> SurvivalPlugin.INSTANCE.getEndermanManager().disable();
+                case "avoidlookat", "lookat", "retaliate" -> {} // 只改配置，不单独禁用功能
                 case "autoeat" -> SurvivalPlugin.INSTANCE.getAutoEat().disable();
                 case "inventory" -> SurvivalPlugin.INSTANCE.getInventoryManager().disable();
                 case "antiafk" -> SurvivalPlugin.INSTANCE.getAntiAFK().disable();
@@ -459,6 +472,8 @@ public class SurvivalManagementCommandExecutor extends SubCommandExecutor {
             case "autoRefill" -> cfg.isInventoryAutoRefillEnabled();
             case "mending" -> cfg.isInventoryMendingEnabled();
             case "autoHotbarSwitch" -> cfg.isInventoryAutoHotbarSwitchEnabled();
+            case "autoDrop" -> cfg.isInventoryAutoDropEnabled();
+            case "betterArmorAutoEquip" -> cfg.isBetterArmorAutoEquipEnabled();
             default -> false;
         };
         
@@ -483,16 +498,19 @@ public class SurvivalManagementCommandExecutor extends SubCommandExecutor {
             case "autoRefill" -> cfg.setInventoryAutoRefillEnabled(newState);
             case "mending" -> cfg.setInventoryMendingEnabled(newState);
             case "autoHotbarSwitch" -> cfg.setInventoryAutoHotbarSwitchEnabled(newState);
+            case "autoDrop" -> cfg.setInventoryAutoDropEnabled(newState);
+            case "betterArmorAutoEquip" -> cfg.setBetterArmorAutoEquipEnabled(newState);
         }
         
         // 更新运行时状态
         if (newState) {
             inv.enable();
         } else {
-            // 如果三个子功能都关了，禁用整个 InventoryFeature
+            // 如果所有子功能都关了，禁用整个 InventoryFeature
             boolean anyEnabled = cfg.isInventoryAutoRefillEnabled() 
                     || cfg.isInventoryMendingEnabled() 
-                    || cfg.isInventoryAutoHotbarSwitchEnabled();
+                    || cfg.isInventoryAutoHotbarSwitchEnabled()
+                    || cfg.isInventoryAutoDropEnabled();
             if (!anyEnabled) {
                 inv.disable();
             }
@@ -515,7 +533,6 @@ public class SurvivalManagementCommandExecutor extends SubCommandExecutor {
 
             if (args.length == 0) {
                 log.info("scanner 子命令:");
-                log.info("  on/off       - 启用/禁用箱子扫描器");
                 log.info("  start/stop   - 开始/停止扫描");
                 log.info("  info         - 查看状态");
                 log.info("  reset        - 清除已扫描记录");
@@ -529,18 +546,13 @@ public class SurvivalManagementCommandExecutor extends SubCommandExecutor {
 
             String sub = args[0].toLowerCase();
             switch (sub) {
-                case "on", "enable" -> {
-                    scanner.enable();
-                }
-                case "off", "disable" -> {
-                    scanner.disable();
-                }
                 case "start" -> {
                     scanner.enable();
                     scanner.startScan();
                 }
                 case "stop" -> {
                     scanner.stopScan();
+                    scanner.disable();
                 }
                 case "info" -> {
                     log.info("===== 箱子扫描器状态 =====");

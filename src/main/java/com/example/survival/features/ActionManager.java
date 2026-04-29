@@ -39,12 +39,29 @@ public class ActionManager {
 
     /** 当前持有动作锁的功能 */
     private final AtomicReference<ActionHolder> currentAction = new AtomicReference<>(null);
+    
+    /** 锁超时释放（5秒超时） */
+    private static final long ACTION_TIMEOUT_MS = 5000;
 
-    /** 由特定动作类型检查是否可以执行 */
+    /** 由特定动作类型检查是否可以获取 */
     public boolean tryAcquire(ActionType type) {
         ActionHolder current = currentAction.get();
+        
+        // 检查超时：锁持有超过5秒自动释放
+        if (current != null) {
+            long holdTime = System.currentTimeMillis() - current.acquireTime;
+            if (holdTime > ACTION_TIMEOUT_MS) {
+                log.warn("[ActionManager] 动作 {} 超时({}ms)，强制释放", current.type, holdTime);
+                currentAction.set(null);
+                current = null;
+            } else {
+                log.debug("[ActionManager] 当前持有锁: {} (优先级{}, 线程{}, 已持有{}ms)", 
+                    current.type, current.priority, current.owner.getName(), holdTime);
+            }
+        }
+        
         if (current == null) {
-            ActionHolder holder = new ActionHolder(type, type.basePriority, Thread.currentThread());
+            ActionHolder holder = new ActionHolder(type, type.basePriority, Thread.currentThread(), System.currentTimeMillis());
             return currentAction.compareAndSet(null, holder);
         }
         // 相同类型：允许（已经是这个类型在执行）
@@ -53,7 +70,7 @@ public class ActionManager {
         if (current.owner == Thread.currentThread()) return true;
         // 新动作优先级 > 当前：打断
         if (type.basePriority > current.priority) {
-            ActionHolder newHolder = new ActionHolder(type, type.basePriority, Thread.currentThread());
+            ActionHolder newHolder = new ActionHolder(type, type.basePriority, Thread.currentThread(), System.currentTimeMillis());
             return currentAction.compareAndSet(current, newHolder);
         }
         return false;
@@ -93,5 +110,5 @@ public class ActionManager {
         return h.type.name() + "(优先级=" + h.priority + ")";
     }
 
-    private record ActionHolder(ActionType type, int priority, Thread owner) {}
+    private record ActionHolder(ActionType type, int priority, Thread owner, long acquireTime) {}
 }

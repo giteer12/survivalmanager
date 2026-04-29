@@ -202,11 +202,36 @@ public class ConfigManager {
 
     public boolean isEndermanManagerEnabled() { return getBool(config, "endermanManager.enabled", false); }
     public boolean isEndermanAvoidLookAt() { return getBool(config, "endermanManager.avoidLookAt", true); }
-    public boolean isEndermanKillIfAttacked() { return getBool(config, "endermanManager.killIfAttacked", true); }
+    public boolean isEndermanLookAt() { return getBool(config, "endermanManager.lookAt", false); }
     public double getEndermanAttackRange() { return getDouble(config, "endermanManager.attackRange", 5.0); }
+
+    // ====== Retaliate (反击) 独立模块配置 ======
+
+    public boolean isRetaliateEnabled() { return getBool(config, "retaliate.enabled", true); }
+    public boolean isRetaliateKillIfAttacked() { return getBool(config, "retaliate.killIfAttacked", true); }
+    public double getRetaliateAttackRange() { return getDouble(config, "retaliate.attackRange", 5.0); }
+    public void setRetaliateEnabled(boolean enabled) {
+        setNested(config, "retaliate.enabled", enabled);
+        saveMainConfig();
+    }
 
     public void setEndermanManagerEnabled(boolean enabled) {
         setNested(config, "endermanManager.enabled", enabled);
+        saveMainConfig();
+    }
+
+    public void setEndermanAvoidLookAt(boolean enabled) {
+        setNested(config, "endermanManager.avoidLookAt", enabled);
+        saveMainConfig();
+    }
+
+    public void setEndermanLookAt(boolean enabled) {
+        setNested(config, "endermanManager.lookAt", enabled);
+        saveMainConfig();
+    }
+
+    public void setRetaliateKillIfAttacked(boolean enabled) {
+        setNested(config, "retaliate.killIfAttacked", enabled);
         saveMainConfig();
     }
 
@@ -230,6 +255,7 @@ public class ConfigManager {
     public List<String> getInventoryAutoDropItems() { return getStringList(config, "inventoryManager.autoDrop"); }
     public int getInventoryDurabilityThreshold() { return getInt(config, "inventoryManager.durabilityAlertThreshold", 10); }
     public int getInventoryAutoDropInterval() { return getInt(config, "inventoryManager.autoDropInterval", 30); }
+    public boolean isInventoryAutoDropEnabled() { return getBool(config, "inventoryManager.autoDrop.enabled", false); }
     public void setInventoryManagerEnabled(boolean enabled) {
         setNested(config, "inventoryManager.enabled", enabled);
         saveMainConfig();
@@ -244,6 +270,7 @@ public class ConfigManager {
         setNested(config, "inventoryManager.autoRefill.enabled", enabled);
         saveMainConfig();
     }
+
 
     // -- mending --
     public boolean isInventoryMendingEnabled() { return getBool(config, "inventoryManager.mending.enabled", false); }
@@ -261,6 +288,10 @@ public class ConfigManager {
         setNested(config, "inventoryManager.autoHotbarSwitch.enabled", enabled);
         saveMainConfig();
     }
+    public void setInventoryAutoDropEnabled(boolean enabled) {
+        setNested(config, "inventoryManager.autoDrop.enabled", enabled);
+        saveMainConfig();
+    }
 
     // -- viewEnabled --
     public boolean isInventoryViewEnabled() { return getBool(config, "inventoryManager.viewEnabled", true); }
@@ -269,6 +300,13 @@ public class ConfigManager {
     public boolean isBetterArmorAlertEnabled() { return getBool(config, "inventoryManager.betterArmorAlert.enabled", true); }
     public void setBetterArmorAlertEnabled(boolean enabled) {
         setNested(config, "inventoryManager.betterArmorAlert.enabled", enabled);
+        saveMainConfig();
+    }
+
+    // -- betterArmorAutoEquip (自动穿戴更好装备) --
+    public boolean isBetterArmorAutoEquipEnabled() { return getBool(config, "inventoryManager.betterArmorAutoEquip.enabled", false); }
+    public void setBetterArmorAutoEquipEnabled(boolean enabled) {
+        setNested(config, "inventoryManager.betterArmorAutoEquip.enabled", enabled);
         saveMainConfig();
     }
 
@@ -350,5 +388,11 @@ public class ConfigManager {
     public void setChestScannerHeightLayers(List<String> layers) {
         setNested(config, "chestScanner.scanHeight.layers", layers);
         saveMainConfig();
+    }
+
+    // ====== NoFall 配置 ======
+
+    public double getNoFallVelocityThreshold() {
+        return getDouble(config, "noFall.velocityThreshold", -0.5);
     }
 }

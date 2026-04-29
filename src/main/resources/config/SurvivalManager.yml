@@ -132,6 +132,9 @@ inventoryManager:
   # 更好装备检测提示（因协议限制无法自动换装，仅提示玩家）
   betterArmorAlert:
     enabled: true
+  # 自动穿戴更好的装备
+  betterArmorAutoEquip:
+    enabled: false
   # 副手图腾补充配置
   totem:
     # 图腾专用槽位 (0-8)，默认8（最后一个槽位）

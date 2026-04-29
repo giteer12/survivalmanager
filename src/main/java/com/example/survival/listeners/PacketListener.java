@@ -151,6 +151,7 @@ public class PacketListener implements Listener {
                 SurvivalPlugin.INSTANCE.getLogger().info("[PacketListener] Offhand totem consumed, replenishing");
                 ItemStack[] inv = MovementSync.INSTANCE.getInventoryManager().getInventory();
                 if (inv != null) {
+                    // 事件触发：跳过副手检查，直接搜索背包
                     SurvivalPlugin.INSTANCE.getInventoryManager().checkAndReplenishTotem(inv);
                 }
             }
@@ -173,15 +174,7 @@ public class PacketListener implements Listener {
             if (entry.getStackSize() <= 1) return;
 
             int amount = item.getAmount();
-            // Bug-1 Fix: Actually call the instant refill method instead of just logging
-            // Only trigger when item is running low (threshold < 5), not on every drop
-            if (amount > 0 && amount < 5) {
-                SurvivalPlugin.INSTANCE.getLogger().info("[PacketListener] Hotbar slot {} item count={}, triggering instant refill", slot - 36, amount);
-                InventoryFeature invFeature = SurvivalPlugin.INSTANCE.getInventoryManager();
-                if (invFeature != null) {
-                    invFeature.triggerInstantRefill(slot - 36);
-                }
-            }
+                // Hotbar slot change (slots 36-44): trigger instant refill check is handled by the polling tick
         }
     }
 
